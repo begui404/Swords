@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Рой мечей — управление рукой</title>
+<style>
+  html,body { margin:0; height:100%; background:#05060f; overflow:hidden; }
+  canvas#c { display:block; width:100%; height:100%; }
+  video { position:fixed; right:10px; top:calc(10px + env(safe-area-inset-top,0px)); width:96px; border-radius:10px;
+    transform:scaleX(-1); opacity:.5; }
+  #st { position:fixed; left:0; right:0; bottom:calc(14px + env(safe-area-inset-bottom,0px)); text-align:center;
+    color:#b8ffcf; font:14px/1.4 system-ui,sans-serif; opacity:.8; pointer-events:none; padding:0 12px; }
+  #start { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:14px;
+    background:#05060f; color:#b8ffcf; font:16px system-ui,sans-serif; text-align:center; padding:24px; }
+  #start button { font:600 18px system-ui,sans-serif; padding:14px 28px; border-radius:14px; border:0; background:#46e07a; color:#04210f; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<video id="v" playsinline muted></video>
+<div id="st"></div>
+<div id="start">
+  <div>✊ кулак — мечи собираются в круг<br>🖐 раскрытая ладонь — взрыв<br>☝️ один палец — поток за пальцем</div>
+  <button id="go">Включить камеру</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js"></script>
+<script>
+const cv=document.getElementById('c'), ctx=cv.getContext('2d'), st=document.getElementById('st');
+let W,H,dpr;
+function resize(){ dpr=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight; cv.width=W*dpr; cv.height=H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); }
+addEventListener('resize',resize); resize();
+
+const N=520, P=[];
+for(let i=0;i<N;i++) P.push({x:Math.random()*W,y:Math.random()*H,vx:0,vy:3,fall:2+Math.random()*3.5,
+  a:Math.random()*6.283,r:0.35+Math.random()*0.65,h:60+Math.random()*80,len:10+Math.random()*10});
+
+let mode='none', prev='none', hx=W/2, hy=H/2, tx=W/2, ty=H/2, spin=0, lastSeen=0;
+
+function dist(a,b){ return Math.hypot(a.x-b.x,a.y-b.y); }
+function analyze(lm){
+  const w=lm[0];
+  const ext=[[8,6],[12,10],[16,14],[20,18]].map(([t,p])=>dist(lm[t],w)>dist(lm[p],w)*1.1);
+  const n=ext.filter(Boolean).length;
+  if(n>=4) return 'open';
+  if(ext[0] && n===1) return 'point';
+  if(n<=1) return 'fist';
+  return prev==='none'?'fist':prev;
+}
+function onResults(res){
+  if(res.multiHandLandmarks && res.multiHandLandmarks.length){
+    const lm=res.multiHandLandmarks[0];
+    prev=mode; mode=analyze(lm); lastSeen=performance.now();
+    const ref = mode==='point' ? lm[8] : lm[9];
+    tx=(1-ref.x)*W; ty=ref.y*H;
+    if(prev==='fist' && mode==='open'){
+      for(const p of P){ const dx=p.x-tx, dy=p.y-ty, d=Math.hypot(dx,dy)||1, s=12+Math.random()*16; p.vx=dx/d*s; p.vy=dy/d*s; }
+    }
+    st.textContent = {fist:'✊ кулак',open:'🖐 ладонь',point:'☝️ палец'}[mode];
+  } else if(performance.now()-lastSeen>400){ mode='none'; st.textContent='покажи руку в камеру'; }
+}
+
+async function start(){
+  document.getElementById('start').style.display='none';
+  st.textContent='загрузка модели…';
+  const video=document.getElementById('v');
+  const hands=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}`});
+  hands.setOptions({maxNumHands:1,modelComplexity:0,minDetectionConfidence:0.6,minTrackingConfidence:0.5});
+  hands.onResults(onResults);
+  const cam=new Camera(video,{onFrame:async()=>{await hands.send({image:video});},width:480,height:360,facingMode:'user'});
+  try{ await cam.start(); st.textContent='покажи руку в камеру'; }
+  catch(e){ st.textContent='нет доступа к камере: '+e.message; }
+}
+document.getElementById('go').onclick=start;
+
+function frame(){
+  hx+=(tx-hx)*0.35; hy+=(ty-hy)*0.35;
+  spin += mode==='fist' ? 0.06 : 0.01;
+  ctx.globalCompositeOperation='source-over';
+  ctx.fillStyle='rgba(5,6,15,0.28)'; ctx.fillRect(0,0,W,H);
+  ctx.globalCompositeOperation='lighter';
+  const R=Math.min(W,H)*0.2;
+  for(const p of P){
+    if(mode==='fist'){
+      const ang=p.a+spin*(0.6+p.r), rad=R*(0.55+p.r*0.55);
+      p.vx+=(hx+Math.cos(ang)*rad-p.x)*0.06; p.vy+=(hy+Math.sin(ang)*rad-p.y)*0.06;
+      p.vx*=0.78; p.vy*=0.78;
+    } else if(mode==='point'){
+      const k=0.004+p.r*0.012;
+      p.vx+=(hx+Math.cos(p.a)*30-p.x)*k; p.vy+=(hy+Math.sin(p.a)*30-p.y)*k;
+      p.vx*=0.94; p.vy*=0.94;
+    } else {
+      p.vx+=(0-p.vx)*0.03; p.vy+=(p.fall-p.vy)*0.03;
+    }
+    p.x+=p.vx; p.y+=p.vy;
+    if(mode!=='fist' && mode!=='point'){
+      if(p.y>H+30){p.y=-30;p.x=Math.random()*W;}
+      if(p.x<-40)p.x=W+40; else if(p.x>W+40)p.x=-40;
+    }
+    const sp=Math.hypot(p.vx,p.vy)||1, ux=p.vx/sp, uy=p.vy/sp, L=p.len+Math.min(sp*1.6,26);
+    const x2=p.x-ux*L, y2=p.y-uy*L, g=ctx.createLinearGradient(p.x,p.y,x2,y2);
+    g.addColorStop(0,`hsla(${p.h},100%,75%,0.95)`); g.addColorStop(1,`hsla(${p.h},100%,50%,0)`);
+    ctx.strokeStyle=g; ctx.lineWidth=2.2; ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(x2,y2); ctx.stroke();
+    const cx=p.x-ux*4, cy=p.y-uy*4;
+    ctx.strokeStyle=`hsla(${p.h+20},100%,80%,0.8)`; ctx.lineWidth=1.6; ctx.beginPath();
+    ctx.moveTo(cx-uy*4,cy+ux*4); ctx.lineTo(cx+uy*4,cy-ux*4); ctx.stroke();
+  }
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
